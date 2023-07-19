@@ -1,0 +1,5 @@
+torch
+torchvision
+einops
+timm
+git+https://github.com/huggingface/diffusers.git

@@ -119,11 +119,12 @@ class ImgWeightGenerator(nn.Module):
         self.decoder_model = WeightDecoder(weight_dim, weight_num, decoder_blocks)
     
     def forward(self, ref_img, iters=None, weight=None, img_features=None):
+        ref_img = resize(ref_img, self.ref_size, antialias=True)
         if self.train_encoder and img_features:
             with torch.no_grad():
-                img_features = self.encoder_model.forward_features(resize(ref_img, self.ref_size))
+                img_features = self.encoder_model.forward_features(ref_img)
         else:
-            img_features = self.encoder_model.forward_features(resize(ref_img, self.ref_size))
+            img_features = self.encoder_model.forward_features(ref_img)
         if isinstance(img_features, list):
             img_features = img_features[-1]
         if len(img_features.shape) == 4:
