@@ -22,7 +22,7 @@ class LiLoRALinearLayer(nn.Module):
         if rank > min(in_features, out_features):
             raise ValueError(f"LoRA rank {rank} must be less or equal than {min(in_features, out_features)}")
 
-        self.seed = self.register_buffer('seed', torch.randint(0, 2**32-1, (1,)))
+        self.seed = self.register_buffer('aux_seed', torch.randint(0, 2**32-1, (1,)))
         self.in_features = in_features
         self.out_features = out_features
         self.down_dim = down_dim
@@ -36,14 +36,15 @@ class LiLoRALinearLayer(nn.Module):
         if trained:
             self.weight = nn.Parameter(torch.empty(down_dim+up_dim, dtype=torch.float32))
 
-    def update_weight(self, weight, add_constant=False):
+    def update_weight(self, weight: torch.Tensor, add_constant=False):
         '''
         weight: [b, up_dim+down_dim] or [up_dim+down_dim]
         '''
         # get aux weights
-        down_aux = torch.empty(self.down_dim, self.in_features, dtype=down.dtype, device=down.device)
-        up_aux = torch.empty(self.out_features, self.up_dim, dtype=up.dtype, device=up.device)
+        down_aux = torch.empty(self.down_dim, self.in_features, dtype=weight.dtype, device=weight.device)
+        up_aux = torch.empty(self.out_features, self.up_dim, dtype=weight.dtype, device=weight.device)
         rng_state = torch.random.get_rng_state()
+        torch.manual_seed(self.aux_seed.item())
         nn.init.orthogonal_(down_aux, gain=1)
         nn.init.orthogonal_(up_aux, gain=1)
         torch.random.set_rng_state(rng_state)
@@ -66,7 +67,7 @@ class LiLoRALinearLayer(nn.Module):
 
     def forward(self, hidden_states):
         orig_dtype = hidden_states.dtype
-        dtype = self.down.weight.dtype
+        dtype = self.down.dtype
         if self.trained:
             self.update_weight(self.weight)
 
