@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 
 from torchvision.transforms.functional import resize
 
@@ -10,6 +11,7 @@ from timm import create_model
 from einops import rearrange
 
 from .attention import TransformerBlock
+from .lightlora import LiLoRALinearLayer
 
 
 def _get_sinusoid_encoding_table(n_position, d_hid):
@@ -147,3 +149,57 @@ class TextWeightGenerator(nn.Module):
     WIP
     '''
     pass
+
+
+class HyperDream(nn.Module):
+    def __init__(
+        self, 
+        img_encoder_model_name: str = "vit_base_patch16_224",
+        ref_img_size: Tuple[int] = (224, 224),
+        weight_dim: int = 150,
+        weight_num: int = 168,
+        decoder_blocks: int = 4,
+        sample_iters: int = 1,
+        add_constant: bool = False,
+        train_encoder: bool = False,
+    ):
+        super(HyperDream, self).__init__()
+        self.img_weight_generator = ImgWeightGenerator(
+            img_encoder_model_name=img_encoder_model_name,
+            reference_size=ref_img_size,
+            weight_dim=weight_dim,
+            weight_num=weight_num,
+            decoder_blocks=decoder_blocks,
+            sample_iters=sample_iters,
+            train_encoder=train_encoder,
+        )
+        self.add_constant = add_constant
+        self.liloras: Dict[str, LiLoRALinearLayer] = {}
+        self.liloras_keys: List[str] = []
+        self.gradient_checkpointing = False
+    
+    def train_params(self):
+        return [p for p in self.parameters() if p.requires_grad]
+    
+    def set_lilora(self, liloras):
+        self.liloras = liloras
+        self.liloras_keys = list(liloras.keys()) # for fixed order
+    
+    def gen_weight(self, reg_img: torch.Tensor, iters: int = None, weight: torch.Tensor = None):
+        weights = self.img_weight_generator(reg_img, iters, weight)
+        weight_list = weights.split(1, dim=1) # [b, n, dim] -> n*[b, 1, dim]
+        return [weight.squeeze(1) for weight in weight_list]
+    
+    def forward(self, ref_img: torch.Tensor):
+        if self.training and self.gradient_checkpointing:
+            weight_list = checkpoint.checkpoint(
+                self.gen_weight, ref_img
+            )
+        else:
+            weight_list = self.gen_weight(ref_img)
+        
+        for key, weight in zip(self.liloras_keys, weight_list):
+            self.liloras[key].update_weight(weight, self.add_constant)
+        
+        # if need further processing
+        return weight_list

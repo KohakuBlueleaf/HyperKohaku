@@ -97,6 +97,10 @@ class LiLoRAAttnProcessor(nn.Module):
         self.to_v_lora = LiLoRALinearLayer(cross_attention_dim or hidden_size, hidden_size, down_dim, up_dim, rank, network_alpha)
         self.to_out_lora = LiLoRALinearLayer(hidden_size, hidden_size, down_dim, up_dim, rank, network_alpha)
 
+    @property
+    def layers(self):
+        return self.to_q_lora, self.to_k_lora, self.to_v_lora, self.to_out_lora
+
     def __call__(
         self, attn: Attention, hidden_states, encoder_hidden_states=None, attention_mask=None, scale=1.0, temb=None
     ):
