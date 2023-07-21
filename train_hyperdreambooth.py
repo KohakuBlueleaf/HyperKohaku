@@ -65,7 +65,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
-from modules.lightlora import LiLoRAAttnProcessor
+from modules.lightlora import LiLoRAAttnProcessor, LiLoRAXformersAttnProcessor
 from modules.hypernet import HyperDream
 
 
@@ -866,9 +866,14 @@ def main(args):
             block_id = int(name[len("down_blocks.")])
             hidden_size = unet.config.block_out_channels[block_id]
 
-        module = LiLoRAAttnProcessor(
-            hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.rank
-        )
+        if args.enable_xformers_memory_efficient_attention:
+            module = LiLoRAXformersAttnProcessor(
+                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.rank
+            )
+        else:
+            module = LiLoRAAttnProcessor(
+                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.rank
+            )
         unet_lora_linear_layers.extend(module.layers)
         unet_lora_attn_procs[name] = module
 

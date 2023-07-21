@@ -7,7 +7,6 @@ python -m accelerate.commands.launch $launch_args `
   --output_dir "./outputs" `
   --resolution 512 `
   --num_train_epochs 10 `
-  --gradient_checkpointing `
   --learning_rate 0.00002 `
   --lr_scheduler cosine `
   --lr_warmup_steps 100 `
