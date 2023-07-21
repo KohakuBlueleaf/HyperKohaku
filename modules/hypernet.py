@@ -43,6 +43,7 @@ class WeightDecoder(nn.Module):
         heads = 1
         while weight_dim % heads==0 and weight_dim // heads > 64:
             heads *= 2
+        heads //= 2
         
         self.pos_emb_proj = nn.Linear(weight_dim, weight_dim, bias=False)
         self.decoder_model = nn.ModuleList(
@@ -165,7 +166,7 @@ class HyperDream(nn.Module):
     ):
         super(HyperDream, self).__init__()
         self.img_weight_generator = ImgWeightGenerator(
-            img_encoder_model_name=img_encoder_model_name,
+            encoder_model_name=img_encoder_model_name,
             reference_size=ref_img_size,
             weight_dim=weight_dim,
             weight_num=weight_num,
@@ -186,7 +187,10 @@ class HyperDream(nn.Module):
     
     def set_lilora(self, liloras):
         self.liloras = liloras
-        self.liloras_keys = list(liloras.keys()) # for fixed order
+        if isinstance(liloras, dict):
+            self.liloras_keys = list(liloras.keys()) # for fixed order
+        else:
+            self.liloras_keys = range(len(liloras))
     
     def gen_weight(self, reg_img: torch.Tensor, iters: int = None, weight: torch.Tensor = None):
         weights = self.img_weight_generator(reg_img, iters, weight)

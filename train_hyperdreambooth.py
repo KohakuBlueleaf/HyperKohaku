@@ -876,7 +876,10 @@ def main(args):
     # [TODO] add more arg to cmd arg for hypernetworks' hyperparameters
     hypernetwork = HyperDream(
         weight_num = len(unet_lora_linear_layers)*2,
+        weight_dim = (100+50) * args.rank,
     )
+    hypernetwork.to(accelerator.device, dtype=weight_dtype)
+    hypernetwork.set_lilora(unet_lora_linear_layers)
     
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()

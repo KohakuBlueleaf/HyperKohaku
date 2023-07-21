@@ -28,7 +28,7 @@ class LiLoRALinearLayer(nn.Module):
         self.down_dim = down_dim
         self.up_dim = up_dim
         self.down = self.up = None
-        self.split = (down_dim, up_dim)
+        self.split = (down_dim*rank, up_dim*rank)
         self.network_alpha = network_alpha
         self.rank = rank
         self.scale = network_alpha / rank if network_alpha is not None else 1.0
@@ -54,16 +54,15 @@ class LiLoRALinearLayer(nn.Module):
             down = down.reshape(self.rank, -1)
             up = up.reshape(-1, self.rank)
         elif weight.dim() == 2:
-            down = down.reshape(down.size(0), self.rank, -1)
-            up = up.reshape(up.size(0), -1, self.rank)
+            down = down.reshape(weight.size(0), self.rank, -1)
+            up = up.reshape(weight.size(0), -1, self.rank)
         else:
             raise ValueError(f"weight dim {weight.dim()} is not supported")
         
         if add_constant:
             down = down + 1
-        
         self.down = down @ down_aux             #[..., rank, in]
-        self.up = up @ up_aux                   #[..., out, rank]
+        self.up = up_aux @ up                   #[..., out, rank]
 
     def forward(self, hidden_states):
         orig_dtype = hidden_states.dtype
@@ -72,8 +71,8 @@ class LiLoRALinearLayer(nn.Module):
             self.update_weight(self.weight)
 
         if self.down.dim()==3:
-            down_hidden_states = torch.einsum('b i o, b ... i -> b ... o', self.down, hidden_states.to(dtype))
-            up_hidden_states = torch.einsum('b i o, b ... i -> b ... o', self.up, down_hidden_states)
+            down_hidden_states = torch.einsum('b o i, b ... i -> b ... o', self.down, hidden_states.to(dtype))
+            up_hidden_states = torch.einsum('b o i, b ... i -> b ... o', self.up, down_hidden_states)
         else:
             down_hidden_states = F.linear(hidden_states.to(dtype), self.down)
             up_hidden_states = F.linear(down_hidden_states, self.up)
