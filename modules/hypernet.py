@@ -178,6 +178,9 @@ class HyperDream(nn.Module):
         self.liloras_keys: List[str] = []
         self.gradient_checkpointing = False
     
+    def enable_gradient_checkpointing(self):
+        self.gradient_checkpointing = True
+    
     def train_params(self):
         return [p for p in self.parameters() if p.requires_grad]
     

@@ -877,6 +877,10 @@ def main(args):
     hypernetwork = HyperDream(
         weight_num = len(unet_lora_linear_layers)*2,
     )
+    
+    if args.gradient_checkpointing:
+        unet.enable_gradient_checkpointing()
+        hypernetwork.enable_gradient_checkpointing()
 
     # The text encoder comes from 🤗 transformers, so we cannot directly modify it.
     # So, instead, we monkey-patch the forward calls of its attention-blocks.
