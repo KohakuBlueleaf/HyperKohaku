@@ -1,7 +1,8 @@
 models/
-.ckpt
-.pt
-.safetensors
+outputs/
+*.ckpt
+*.pt
+*.safetensors
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
