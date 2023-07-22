@@ -66,7 +66,7 @@ from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
 from modules.lightlora import LiLoRAAttnProcessor, LiLoRAXformersAttnProcessor
-from modules.hypernet import HyperDream
+from modules.hypernet import PreOptHyperDream
 
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
@@ -409,6 +409,11 @@ def parse_args(input_args=None):
         default=1,
         help=("The dimension of the LoRA update matrices."),
     )
+    parser.add_argument(
+        "--put_in_cpu",
+        action="store_true",
+        help=("Put all the weights in the CPU."),
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -493,7 +498,7 @@ class HyperDreamBoothDataset(Dataset):
             example["instance_prompt_ids"] = text_inputs.input_ids
             example["instance_attention_mask"] = text_inputs.attention_mask
         
-        example["instance_ids"] = self.path_to_idx[img_path]
+        example["instance_ids"] = self.path_to_idx[str(img_path)]
         return example
 
 
@@ -572,22 +577,6 @@ def encode_prompt(text_encoder, input_ids, attention_mask, text_encoder_use_atte
     prompt_embeds = prompt_embeds[0]
 
     return prompt_embeds
-
-
-def unet_attn_processors_state_dict(unet) -> Dict[str, torch.tensor]:
-    r"""
-    Returns:
-        a state dict containing just the attention processor parameters.
-    """
-    attn_processors = unet.attn_processors
-
-    attn_processors_state_dict = {}
-
-    for attn_processor_key, attn_processor in attn_processors.items():
-        for parameter_key, parameter in attn_processor.state_dict().items():
-            attn_processors_state_dict[f"{attn_processor_key}.{parameter_key}"] = parameter
-
-    return attn_processors_state_dict
 
 
 def main(args):
@@ -748,27 +737,6 @@ def main(args):
         unet_lora_attn_procs[name] = module
 
     unet.set_attn_processor(unet_lora_attn_procs)
-    # [TODO] add more arg to cmd arg for hypernetworks' hyperparameters
-    hypernetwork = HyperDream(
-        weight_num = len(unet_lora_linear_layers)*2,
-        weight_dim = (100+50) * args.rank,
-    )
-    hypernetwork.to(accelerator.device)
-    hypernetwork.set_lilora(unet_lora_linear_layers)
-    
-    if args.gradient_checkpointing:
-        unet.enable_gradient_checkpointing()
-        hypernetwork.enable_gradient_checkpointing()
-
-    # The text encoder comes from 🤗 transformers, so we cannot directly modify it.
-    # So, instead, we monkey-patch the forward calls of its attention-blocks.
-    if args.train_text_encoder:
-        # [TODO] we need some implementation for LiLoraLoaderMixin or something like that
-        raise NotImplementedError("Training the text encoder is not yet supported.")
-        # ensure that dtype is float32, even if rest of the model that isn't trained is loaded in fp16
-        # text_lora_parameters = LoraLoaderMixin._modify_text_encoder(text_encoder, dtype=torch.float32, rank=args.rank)
-
-    # [TODO] model hook for hypernetwork if needed
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     if args.allow_tf32:
@@ -787,20 +755,12 @@ def main(args):
             raise ImportError(
                 "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
             )
+        if args.put_in_cpu:
+            raise ValueError("8-bit Adam is not supported in CPU.")
 
         optimizer_class = bnb.optim.AdamW8bit
     else:
         optimizer_class = torch.optim.AdamW
-
-    # Optimizer creation
-    params_to_optimize = hypernetwork.parameters()
-    optimizer = optimizer_class(
-        params_to_optimize,
-        lr=args.learning_rate,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-        eps=args.adam_epsilon,
-    )
 
     if args.pre_compute_text_embeddings:
 
@@ -851,6 +811,72 @@ def main(args):
         collate_fn=lambda examples: collate_fn(examples),
         num_workers=args.dataloader_num_workers,
     )
+    
+    # [TODO] add more arg to cmd arg for hypernetworks' hyperparameters
+    hypernetwork = PreOptHyperDream(
+        (100+50)*args.rank
+    ).to(weight_dtype)
+    hypernetwork.set_lilora(unet_lora_linear_layers, train_dataset.num_instance_images)
+    hypernetwork.set_device(accelerator.device)
+    
+    if args.gradient_checkpointing:
+        hypernetwork.enable_gradient_checkpointing()
+        unet.enable_gradient_checkpointing()
+
+    # The text encoder comes from 🤗 transformers, so we cannot directly modify it.
+    # So, instead, we monkey-patch the forward calls of its attention-blocks.
+    if args.train_text_encoder:
+        # [TODO] we need some implementation for LiLoraLoaderMixin or something like that
+        raise NotImplementedError("Training the text encoder is not yet supported.")
+        # ensure that dtype is float32, even if rest of the model that isn't trained is loaded in fp16
+        # text_lora_parameters = LoraLoaderMixin._modify_text_encoder(text_encoder, dtype=torch.float32, rank=args.rank)
+
+    # [TODO] model hook for hypernetwork if needed
+    
+    # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
+    def save_model_hook(models, weights, output_dir):
+        # there are only two options here. Either are just the unet attn processor layers
+        # or there are the unet and text encoder atten layers
+        unet_lora_layers_to_save = None
+        text_encoder_lora_layers_to_save = None
+
+        for model in models:
+            if isinstance(model, type(accelerator.unwrap_model(hypernetwork))):
+                hypernetwork_ = model
+            elif isinstance(model, type(accelerator.unwrap_model(unet))):
+                unet_ = model
+            elif isinstance(model, type(accelerator.unwrap_model(text_encoder))):
+                text_encoder_ = model
+            else:
+                raise ValueError(f"unexpected save model: {model.__class__}")
+
+            # make sure to pop weight so that corresponding model is not saved again
+            weights.pop()
+
+        state_dict = {'pre_optimized': hypernetwork_.weights}
+        torch.save(state_dict, os.path.join(output_dir, "pre_optimized.bin"))
+        logger.info(f"Model weights saved in {os.path.join(output_dir, 'pre_optimized.bin')}")
+
+    def load_model_hook(models, input_dir):
+        unet_ = None
+        text_encoder_ = None
+
+        while len(models) > 0:
+            model = models.pop()
+
+            if isinstance(model, type(accelerator.unwrap_model(hypernetwork))):
+                hypernetwork_ = model
+            elif isinstance(model, type(accelerator.unwrap_model(unet))):
+                unet_ = model
+            elif isinstance(model, type(accelerator.unwrap_model(text_encoder))):
+                text_encoder_ = model
+            else:
+                raise ValueError(f"unexpected save model: {model.__class__}")
+
+        #[TODO] load hypernetwork weights
+
+    accelerator.register_save_state_pre_hook(save_model_hook)
+    accelerator.register_load_state_pre_hook(load_model_hook)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -858,6 +884,16 @@ def main(args):
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
+
+    # Optimizer creation
+    params_to_optimize = hypernetwork.parameters()
+    optimizer = optimizer_class(
+        params_to_optimize,
+        lr=args.learning_rate,
+        betas=(args.adam_beta1, args.adam_beta2),
+        weight_decay=args.adam_weight_decay,
+        eps=args.adam_epsilon,
+    )
 
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
@@ -871,11 +907,13 @@ def main(args):
     # Prepare everything with our `accelerator`.
     if args.train_text_encoder:
         unet, text_encoder, hypernetwork, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, text_encoder, hypernetwork, optimizer, train_dataloader, lr_scheduler
+            unet, text_encoder, hypernetwork, optimizer, train_dataloader, lr_scheduler,
+            device_placement=[True, True, not args.put_in_cpu, not args.put_in_cpu, True, True]
         )
     else:
         unet, hypernetwork, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            unet, hypernetwork, optimizer, train_dataloader, lr_scheduler
+            unet, hypernetwork, optimizer, train_dataloader, lr_scheduler,
+            device_placement=[True, not args.put_in_cpu, not args.put_in_cpu, True, True]
         )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -949,7 +987,7 @@ def main(args):
                 
                 # run hypernet through ref imgs
                 # hypernet will update all the weight in 
-                hypernetwork(pixel_values)
+                hypernetwork(batch["ids"])
 
                 if vae is not None:
                     # Convert images to latent space
@@ -1020,7 +1058,7 @@ def main(args):
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:

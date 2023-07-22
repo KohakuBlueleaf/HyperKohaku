@@ -174,6 +174,7 @@ class HyperDream(nn.Module):
             sample_iters=sample_iters,
             train_encoder=train_encoder,
         )
+        self.weight_dim = weight_dim
         self.add_constant = add_constant
         self.liloras: Dict[str, LiLoRALinearLayer] = {}
         self.liloras_keys: List[str] = []
@@ -191,6 +192,8 @@ class HyperDream(nn.Module):
             self.liloras_keys = list(liloras.keys()) # for fixed order
         else:
             self.liloras_keys = range(len(liloras))
+        length = len(self.liloras_keys)
+        print(f"LiLoRA keys: {length}, Pre-Optimized params per images: {length*self.weight_dim}")
     
     def gen_weight(self, reg_img: torch.Tensor, iters: int = None, weight: torch.Tensor = None):
         weights = self.img_weight_generator(reg_img, iters, weight)
@@ -207,6 +210,65 @@ class HyperDream(nn.Module):
         
         for key, weight in zip(self.liloras_keys, weight_list):
             self.liloras[key].update_weight(weight, self.add_constant)
+        
+        # if need further processing
+        return weight_list
+
+
+class PreOptHyperDream(nn.Module):
+    def __init__(
+        self, 
+        weight_dim: int = 150,
+    ):
+        super(PreOptHyperDream, self).__init__()
+        self.weights = nn.Parameter(torch.tensor(0.0))
+        self.weight_dim = weight_dim
+        self.liloras: Dict[str, LiLoRALinearLayer] = {}
+        self.liloras_keys: List[str] = []
+        self.gradient_checkpointing = False
+        self.device = 'cpu'
+    
+    def enable_gradient_checkpointing(self):
+        self.gradient_checkpointing = True
+    
+    def train_params(self):
+        return [p for p in self.parameters() if p.requires_grad]
+    
+    def set_device(self, device):
+        self.device = device
+    
+    def set_lilora(self, liloras, identities = 1):
+        self.liloras = liloras
+        if isinstance(liloras, dict):
+            self.liloras_keys = list(liloras.keys()) # for fixed order
+        else:
+            self.liloras_keys = range(len(liloras))
+        length = len(self.liloras_keys)
+        print(f"LiLoRA keys: {length}, Pre-Optimized params per images: {length*self.weight_dim}")
+        print(f"Pre-Optimized params: {length*self.weight_dim*identities/1e6:.1f}M")
+        del self.weights
+        
+        self.length = length
+        self.weights = nn.ParameterList(
+            torch.randn(1, length, self.weight_dim)*0.01
+            for _ in range(identities)
+        )
+    
+    def gen_weight(self, identities: torch.Tensor):
+        weights = torch.concat([self.weights[id] for id in identities], dim=0)
+        weight_list = weights.to(self.device).split(1, dim=1) # [b, n, dim] -> n*[b, 1, dim]
+        return [weight.squeeze(1) for weight in weight_list]
+    
+    def forward(self, ref_img: torch.Tensor):
+        if self.training and self.gradient_checkpointing:
+            weight_list = checkpoint.checkpoint(
+                self.gen_weight, ref_img
+            )
+        else:
+            weight_list = self.gen_weight(ref_img)
+        
+        for key, weight in zip(self.liloras_keys, weight_list):
+            self.liloras[key].update_weight(weight)
         
         # if need further processing
         return weight_list
