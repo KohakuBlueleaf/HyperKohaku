@@ -233,7 +233,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--sample_batch_size", type=int, default=4, help="Batch size (per device) for sampling images."
     )
-    parser.add_argument("--num_train_epochs", type=int, default=1)
+    parser.add_argument("--train_steps_per_identity", type=int, default=100)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -407,6 +407,18 @@ def parse_args(input_args=None):
         "--rank",
         type=int,
         default=1,
+        help=("The dimension of the LoRA update matrices."),
+    )
+    parser.add_argument(
+        "--down_dim",
+        type=int,
+        default=128,
+        help=("The dimension of the LoRA update matrices."),
+    )
+    parser.add_argument(
+        "--up_dim",
+        type=int,
+        default=64,
         help=("The dimension of the LoRA update matrices."),
     )
     parser.add_argument(
@@ -727,11 +739,13 @@ def main(args):
 
         if args.enable_xformers_memory_efficient_attention:
             module = LiLoRAXformersAttnProcessor(
-                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.rank
+                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.rank,
+                down_dim=args.down_dim, up_dim=args.up_dim
             )
         else:
             module = LiLoRAAttnProcessor(
-                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.rank
+                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.rank,
+                down_dim=args.down_dim, up_dim=args.up_dim
             )
         unet_lora_linear_layers.extend(module.layers)
         unet_lora_attn_procs[name] = module
@@ -814,7 +828,9 @@ def main(args):
     
     # [TODO] add more arg to cmd arg for hypernetworks' hyperparameters
     hypernetwork = PreOptHyperDream(
-        (100+50)*args.rank
+        args.rank,
+        args.down_dim,
+        args.up_dim,
     ).to(weight_dtype)
     hypernetwork.set_lilora(unet_lora_linear_layers, train_dataset.num_instance_images)
     hypernetwork.set_device(accelerator.device)
@@ -882,7 +898,7 @@ def main(args):
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+        args.max_train_steps = num_update_steps_per_epoch
         overrode_max_train_steps = True
 
     # Optimizer creation
@@ -917,11 +933,9 @@ def main(args):
         )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = len(train_dataloader)
     if overrode_max_train_steps:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    # Afterwards we recalculate our number of training epochs
-    args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+        args.max_train_steps = num_update_steps_per_epoch
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -933,14 +947,13 @@ def main(args):
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
-    logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
-    logger.info(f"  Num Epochs = {args.num_train_epochs}")
+    logger.info(f"  Num batches = {len(train_dataloader)}")
+    logger.info(f"  Num updates per identity = {args.train_steps_per_identity}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
-    logger.info(f"  Total optimization steps = {args.max_train_steps}")
+    logger.info(f"  Total optimization steps = {args.max_train_steps * args.train_steps_per_identity}")
     global_step = 0
-    first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
@@ -969,32 +982,39 @@ def main(args):
 
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(global_step, args.max_train_steps), disable=not accelerator.is_local_main_process)
-    progress_bar.set_description("Steps")
+    progress_bar.set_description("Identities Batches")
 
-    for epoch in range(first_epoch, args.num_train_epochs):
-        unet.train()
-        if args.train_text_encoder:
-            text_encoder.train()
-        for step, batch in enumerate(train_dataloader):
-            # Skip steps until we reach the resumed step
-            if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
-                if step % args.gradient_accumulation_steps == 0:
-                    progress_bar.update(1)
-                continue
+    unet.train()
+    hypernetwork.train()
+    if args.train_text_encoder:
+        text_encoder.train()
+    for step, batch in enumerate(train_dataloader):
+        # Skip steps until we reach the resumed step
+        if args.resume_from_checkpoint  and step < resume_step:
+            if step % args.gradient_accumulation_steps == 0:
+                progress_bar.update(1)
+            continue
 
-            with accelerator.accumulate(unet):
-                pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
-                
+        pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+        if vae is not None:
+            with accelerator.autocast():
+                # Convert images to latent space
+                model_input = vae.encode(pixel_values).latent_dist.sample()
+                model_input = model_input * vae.config.scaling_factor
+        else:
+            model_input = pixel_values
+        
+        inner_progress_bar = tqdm(
+            range(args.train_steps_per_identity * args.gradient_accumulation_steps), 
+            disable=not accelerator.is_local_main_process,
+            leave=False
+        )
+        for inner_step in range(args.train_steps_per_identity * args.gradient_accumulation_steps):
+            with accelerator.accumulate(hypernetwork):
                 # run hypernet through ref imgs
                 # hypernet will update all the weight in 
-                hypernetwork(batch["ids"])
-
-                if vae is not None:
-                    # Convert images to latent space
-                    model_input = vae.encode(pixel_values).latent_dist.sample()
-                    model_input = model_input * vae.config.scaling_factor
-                else:
-                    model_input = pixel_values
+                with accelerator.autocast():
+                    hypernetwork(batch["ids"])
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(model_input)
@@ -1008,17 +1028,18 @@ def main(args):
                 # Add noise to the model input according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 noisy_model_input = noise_scheduler.add_noise(model_input, noise, timesteps)
-
+                
                 # Get the text embedding for conditioning
                 if args.pre_compute_text_embeddings:
                     encoder_hidden_states = batch["input_ids"]
                 else:
-                    encoder_hidden_states = encode_prompt(
-                        text_encoder,
-                        batch["input_ids"],
-                        batch["attention_mask"],
-                        text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
-                    )
+                    with accelerator.autocast():
+                        encoder_hidden_states = encode_prompt(
+                            text_encoder,
+                            batch["input_ids"],
+                            batch["attention_mask"],
+                            text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                        )
 
                 if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
                     noisy_model_input = torch.cat([noisy_model_input, noisy_model_input], dim=1)
@@ -1032,9 +1053,11 @@ def main(args):
                 if args.gradient_checkpointing:
                     noisy_model_input.requires_grad_(True)
                     encoder_hidden_states.requires_grad_(True)
-                model_pred = unet(
-                    noisy_model_input, timesteps, encoder_hidden_states, class_labels=class_labels
-                ).sample
+                
+                with accelerator.autocast():
+                    model_pred = unet(
+                        noisy_model_input, timesteps, encoder_hidden_states, class_labels=class_labels
+                    ).sample
 
                 # if model predicts variance, throw away the prediction. we will only train on the
                 # simplified training objective. This means that all schedulers using the fine tuned
@@ -1062,45 +1085,47 @@ def main(args):
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                progress_bar.update(1)
-                global_step += 1
-
-                if accelerator.is_main_process:
-                    if global_step % args.checkpointing_steps == 0:
-                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                        if args.checkpoints_total_limit is not None:
-                            checkpoints = os.listdir(args.output_dir)
-                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
-
-                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                            if len(checkpoints) >= args.checkpoints_total_limit:
-                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
-                                removing_checkpoints = checkpoints[0:num_to_remove]
-
-                                logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
-
-                                for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
-
-                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path}")
+                inner_progress_bar.update(1)
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
-            accelerator.log(logs, step=global_step)
+            inner_progress_bar.set_postfix(**logs)
+            accelerator.log(logs, step=global_step*args.train_steps_per_identity + inner_step)
+        inner_progress_bar.close()
+        global_step += 1
+        progress_bar.update(1)
 
-            if global_step >= args.max_train_steps:
-                break
+        if (accelerator.is_main_process 
+            and global_step % args.checkpointing_steps == 0
+            and args.checkpoints_total_limit is not None):
+            
+            checkpoints = os.listdir(args.output_dir)
+            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
 
-        if accelerator.is_main_process:
-            # [TODO] validation process, take validation images and use instance prompt
-            pass
+            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+            if len(checkpoints) >= args.checkpoints_total_limit:
+                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                removing_checkpoints = checkpoints[0:num_to_remove]
+
+                logger.info(
+                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                )
+                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+
+                for removing_checkpoint in removing_checkpoints:
+                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                    shutil.rmtree(removing_checkpoint)
+
+            save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+            accelerator.save_state(save_path)
+            logger.info(f"Saved state to {save_path}")
+
+        if global_step >= args.max_train_steps:
+            break
+
+    if accelerator.is_main_process:
+        # [TODO] validation process, take validation images and use instance prompt
+        pass
 
     # Save the lora layers
     accelerator.wait_for_everyone()

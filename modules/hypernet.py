@@ -218,11 +218,16 @@ class HyperDream(nn.Module):
 class PreOptHyperDream(nn.Module):
     def __init__(
         self, 
-        weight_dim: int = 150,
+        rank: int = 1,
+        down_dim: int = 100,
+        up_dim: int = 50,
     ):
         super(PreOptHyperDream, self).__init__()
         self.weights = nn.Parameter(torch.tensor(0.0))
-        self.weight_dim = weight_dim
+        self.rank = rank
+        self.down_dim = down_dim
+        self.up_dim = up_dim
+        self.params_per_lora = (down_dim+up_dim)*rank
         self.liloras: Dict[str, LiLoRALinearLayer] = {}
         self.liloras_keys: List[str] = []
         self.gradient_checkpointing = False
@@ -244,14 +249,16 @@ class PreOptHyperDream(nn.Module):
         else:
             self.liloras_keys = range(len(liloras))
         length = len(self.liloras_keys)
-        print(f"LiLoRA keys: {length}, Pre-Optimized params per images: {length*self.weight_dim}")
-        print(f"Pre-Optimized params: {length*self.weight_dim*identities/1e6:.1f}M")
+        print(f"LiLoRA keys: {length}, Pre-Optimized params per images: {length*self.params_per_lora}")
+        print(f"Pre-Optimized params: {length*self.params_per_lora*identities/1e6:.1f}M")
         del self.weights
         
         self.length = length
         self.weights = nn.ParameterList(
-            torch.randn(1, length, self.weight_dim)*0.01
-            for _ in range(identities)
+            torch.concat([
+                torch.randn(1, length, self.down_dim*self.rank),
+                torch.zeros(1, length, self.up_dim*self.rank)
+            ], dim=-1) for _ in range(identities)
         )
     
     def gen_weight(self, identities: torch.Tensor):

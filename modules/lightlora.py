@@ -217,7 +217,7 @@ class LiLoRAXformersAttnProcessor(nn.Module):
         # attention_probs = attn.get_attention_scores(query, key, attention_mask)
         # hidden_states = torch.bmm(attention_probs, value)
         hidden_states = xformers.ops.memory_efficient_attention(
-            query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale
+            query.to(key.dtype), key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale
         )
         hidden_states = attn.batch_to_head_dim(hidden_states)
 

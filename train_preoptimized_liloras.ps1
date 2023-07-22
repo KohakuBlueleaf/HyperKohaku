@@ -6,14 +6,18 @@ python -m accelerate.commands.launch $launch_args `
   --instance_prompt "A [V] face" `
   --output_dir "./outputs" `
   --resolution 512 `
-  --num_train_epochs 10 `
   --learning_rate 0.001 `
   --lr_scheduler constant `
   --allow_tf32 `
   --enable_xformers_memory_efficient_attention `
   --pre_compute_text_embeddings `
   --checkpoints_total_limit 2 `
-  --rank 4 `
+  --checkpointing_steps 500 `
+  --rank 1 `
+  --down_dim 96 `
+  --up_dim 48 `
+  --train_batch_size 12 `
   --put_in_cpu `
+  --mixed_precision "bf16" `
 
 Write-Output "Train finished"
