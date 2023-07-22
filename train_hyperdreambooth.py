@@ -746,7 +746,7 @@ def main(args):
         weight_num = len(unet_lora_linear_layers)*2,
         weight_dim = (100+50) * args.rank,
     )
-    hypernetwork.to(accelerator.device, dtype=weight_dtype)
+    hypernetwork.to(accelerator.device)
     hypernetwork.set_lilora(unet_lora_linear_layers)
     
     if args.gradient_checkpointing:
@@ -984,6 +984,9 @@ def main(args):
                     class_labels = None
 
                 # Predict the noise residual
+                if args.gradient_checkpointing:
+                    noisy_model_input.requires_grad_(True)
+                    encoder_hidden_states.requires_grad_(True)
                 model_pred = unet(
                     noisy_model_input, timesteps, encoder_hidden_states, class_labels=class_labels
                 ).sample

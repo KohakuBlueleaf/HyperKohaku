@@ -13,6 +13,7 @@ python -m accelerate.commands.launch $launch_args `
   --use_8bit_adam `
   --allow_tf32 `
   --enable_xformers_memory_efficient_attention `
+  --gradient_checkpointing `
   --pre_compute_text_embeddings `
 
 Write-Output "Train finished"
