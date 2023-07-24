@@ -29,7 +29,13 @@ def _get_sinusoid_encoding_table(n_position, d_hid):
 
 
 class WeightDecoder(nn.Module):
-    def __init__(self, weight_dim: int = 150, weight_num: int = 168, decoder_blocks: int = 4):
+    def __init__(
+        self, 
+        weight_dim: int = 150, 
+        weight_num: int = 168, 
+        decoder_blocks: int = 4,
+        add_constant: bool = False,
+    ):
         super(WeightDecoder, self).__init__()
         self.weight_num = weight_num
         self.weight_dim = weight_dim
@@ -55,9 +61,9 @@ class WeightDecoder(nn.Module):
             nn.LayerNorm(weight_dim),
             nn.Linear(weight_dim, weight_dim, bias=False)
         )
-        self.init_weights()
+        self.init_weights(add_constant)
     
-    def init_weights(self):
+    def init_weights(self, add_constant: bool = False):
         def basic_init(module):
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
@@ -67,10 +73,12 @@ class WeightDecoder(nn.Module):
         
         # For no pre-optimized training, you should consider use the following init
         # with self.down = down@down_aux + 1 in LiLoRAAttnProcessor
-        # torch.nn.init.constant_(self.delta_proj[1].weight, 0)
+        # if add_constant:
+        torch.nn.init.constant_(self.delta_proj[1].weight, 0)
         
         # advice from Nataniel Ruiz, looks like 1e-3 is small enough
-        torch.nn.init.normal_(self.delta_proj[1].weight, std=1e-3)
+        # else:
+        #     torch.nn.init.normal_(self.delta_proj[1].weight, std=1e-3)
     
     def forward(self, weight, features):
         pos_emb = self.pos_emb_proj(self.block_pos_emb[:, :weight.size(1)].clone().detach())
@@ -91,6 +99,7 @@ class ImgWeightGenerator(nn.Module):
         weight_num: int = 168,
         decoder_blocks: int = 4,
         sample_iters: int = 1,
+        add_constant: bool = False,
     ):
         super(ImgWeightGenerator, self).__init__()
         self.ref_size = reference_size
@@ -119,11 +128,11 @@ class ImgWeightGenerator(nn.Module):
         
         self.feature_proj = nn.Linear(test_output.shape[-1], weight_dim, bias=False)
         self.pos_emb_proj = nn.Linear(weight_dim, weight_dim, bias=False)
-        self.decoder_model = WeightDecoder(weight_dim, weight_num, decoder_blocks)
+        self.decoder_model = WeightDecoder(weight_dim, weight_num, decoder_blocks, add_constant)
     
-    def forward(self, ref_img, iters=None, weight=None, img_features=None):
+    def encode_features(self, ref_img):
         ref_img = resize(ref_img, self.ref_size, antialias=True)
-        if self.train_encoder and img_features:
+        if not self.train_encoder:
             with torch.no_grad():
                 img_features = self.encoder_model.forward_features(ref_img)
         else:
@@ -133,15 +142,24 @@ class ImgWeightGenerator(nn.Module):
         if len(img_features.shape) == 4:
             # B, C, H, W -> B, L, C
             img_features = img_features.view(img_features.size(0), img_features.size(1), -1).transpose(1, 2)
+        return img_features
+    
+    def decode_weight(self, img_features, iters=None, weight=None):
         img_features = self.feature_proj(img_features)
         
         if weight is None:
             weight = torch.zeros(
-                ref_img.size(0), self.weight_num, self.weight_dim, device=ref_img.device
+                img_features.size(0), self.weight_num, self.weight_dim, 
+                device=img_features.device
             )
         
-        for iter in range(iters or self.sample_iters):
+        for _ in range(iters or self.sample_iters):
             weight = self.decoder_model(weight, img_features)
+        return weight
+    
+    def forward(self, ref_img, iters=None, weight=None, ensure_grad=0):
+        img_features = self.encode_features(ref_img) + ensure_grad
+        weight = self.decode_weight(img_features, iters, weight)
         return weight
 
 
@@ -173,6 +191,7 @@ class HyperDream(nn.Module):
             decoder_blocks=decoder_blocks,
             sample_iters=sample_iters,
             train_encoder=train_encoder,
+            add_constant=add_constant,
         )
         self.weight_dim = weight_dim
         self.add_constant = add_constant
@@ -195,18 +214,19 @@ class HyperDream(nn.Module):
         length = len(self.liloras_keys)
         print(f"LiLoRA keys: {length}, Pre-Optimized params per images: {length*self.weight_dim}")
     
-    def gen_weight(self, reg_img: torch.Tensor, iters: int = None, weight: torch.Tensor = None):
-        weights = self.img_weight_generator(reg_img, iters, weight)
+    def gen_weight(self, reg_img, iters, weight, ensure_grad = 0):
+        weights = self.img_weight_generator(reg_img, iters, weight, ensure_grad)
         weight_list = weights.split(1, dim=1) # [b, n, dim] -> n*[b, 1, dim]
         return weights, [weight.squeeze(1) for weight in weight_list]
     
-    def forward(self, ref_img: torch.Tensor):
+    def forward(self, ref_img: torch.Tensor, iters: int = None, weight: torch.Tensor = None):
         if self.training and self.gradient_checkpointing:
+            ensure_grad = torch.zeros(1, device=ref_img.device).requires_grad_(True)
             weights, weight_list = checkpoint.checkpoint(
-                self.gen_weight, ref_img
+                self.gen_weight, ref_img, iters, weight, ensure_grad
             )
         else:
-            weights, weight_list = self.gen_weight(ref_img)
+            weights, weight_list = self.gen_weight(ref_img, iters, weight)
         
         for key, weight in zip(self.liloras_keys, weight_list):
             self.liloras[key].update_weight(weight, self.add_constant)
@@ -262,8 +282,8 @@ class PreOptHyperDream(nn.Module):
         )
     
     def gen_weight(self, identities: torch.Tensor):
-        weights = torch.concat([self.weights[id] for id in identities], dim=0)
-        weight_list = weights.to(self.device).split(1, dim=1) # [b, n, dim] -> n*[b, 1, dim]
+        weights = torch.concat([self.weights[id] for id in identities], dim=0).to(self.device)
+        weight_list = weights.split(1, dim=1) # [b, n, dim] -> n*[b, 1, dim]
         return weights, [weight.squeeze(1) for weight in weight_list]
     
     def forward(self, ref_img: torch.Tensor):

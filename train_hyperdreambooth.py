@@ -30,6 +30,7 @@ import shutil
 import warnings
 from pathlib import Path
 from typing import Dict
+from collections import OrderedDict
 
 import numpy as np
 import torch
@@ -517,7 +518,7 @@ class HyperDreamBoothDataset(Dataset):
             example["instance_prompt_ids"] = text_inputs.input_ids
             example["instance_attention_mask"] = text_inputs.attention_mask
         
-        example["instance_ids"] = self.path_to_idx[img_path]
+        example["instance_ids"] = self.path_to_idx[str(img_path)]
         return example
 
 
@@ -762,11 +763,13 @@ def main(args):
 
         if args.enable_xformers_memory_efficient_attention:
             module = LiLoRAXformersAttnProcessor(
-                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.rank
+                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, 
+                rank=args.rank, down_dim=args.down_dim, up_dim=args.up_dim,
             )
         else:
             module = LiLoRAAttnProcessor(
-                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.rank
+                hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, 
+                rank=args.rank, down_dim=args.down_dim, up_dim=args.up_dim,
             )
         unet_lora_linear_layers.extend(module.layers)
         unet_lora_attn_procs[name] = module
@@ -776,6 +779,7 @@ def main(args):
     hypernetwork = HyperDream(
         weight_num = len(unet_lora_linear_layers),
         weight_dim = (args.up_dim + args.down_dim) * args.rank,
+        sample_iters = 4 
     )
     hypernetwork.to(accelerator.device)
     hypernetwork.set_lilora(unet_lora_linear_layers)
@@ -934,6 +938,7 @@ def main(args):
         sd = weight['pre_optimized']
         pre_opt_hypernet.load_state_dict(sd)
         pre_opt_hypernet.requires_grad_(False)
+        pre_opt_hypernet.set_device(accelerator.device)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -1102,10 +1107,11 @@ def main(args):
 
                 img_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
                 
-                if args.pre_opt_weight_loss:
-                    pre_opt_weights = pre_opt_hypernet(batch['ids']).to(device=accelerator.device)
+                if args.pre_opt_weight_path != '':
+                    with torch.no_grad(), accelerator.autocast():
+                        pre_opt_weights, _ = pre_opt_hypernet.gen_weight(batch['ids'])
                     weight_loss = F.mse_loss(pred_weights.float(), pre_opt_weights.float(), reduction="mean")
-                loss = img_loss + weight_loss*0.1
+                loss = weight_loss*0.1 + img_loss
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
@@ -1146,7 +1152,13 @@ def main(args):
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = OrderedDict()
+            logs["loss"] = loss.detach().item()
+            logs["weight_norm"] = torch.norm(pred_weights.detach()).item()
+            if args.pre_opt_weight_path != '':
+                logs["gen_loss"] = img_loss.detach().item()
+                logs["weight_loss"] = weight_loss.detach().item()
+            logs["lr"] = lr_scheduler.get_last_lr()[0]
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
