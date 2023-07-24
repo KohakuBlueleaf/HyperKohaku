@@ -66,7 +66,7 @@ from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
 from modules.lightlora import LiLoRAAttnProcessor, LiLoRAXformersAttnProcessor
-from modules.hypernet import HyperDream
+from modules.hypernet import HyperDream, PreOptHyperDream
 
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
@@ -407,6 +407,30 @@ def parse_args(input_args=None):
         "--rank",
         type=int,
         default=1,
+        help=("The dimension of the LoRA update matrices."),
+    )
+    parser.add_argument(
+        "--down_dim",
+        type=int,
+        default=128,
+        help=("The dimension of the LoRA update matrices."),
+    )
+    parser.add_argument(
+        "--up_dim",
+        type=int,
+        default=64,
+        help=("The dimension of the LoRA update matrices."),
+    )
+    parser.add_argument(
+        "--pre_opt_weight_loss",
+        type=float,
+        default=0.1,
+        help=("The dimension of the LoRA update matrices."),
+    )
+    parser.add_argument(
+        "--pre_opt_weight_path",
+        type=str,
+        default='',
         help=("The dimension of the LoRA update matrices."),
     )
 
@@ -750,8 +774,8 @@ def main(args):
     unet.set_attn_processor(unet_lora_attn_procs)
     # [TODO] add more arg to cmd arg for hypernetworks' hyperparameters
     hypernetwork = HyperDream(
-        weight_num = len(unet_lora_linear_layers)*2,
-        weight_dim = (100+50) * args.rank,
+        weight_num = len(unet_lora_linear_layers),
+        weight_dim = (args.up_dim + args.down_dim) * args.rank,
     )
     hypernetwork.to(accelerator.device)
     hypernetwork.set_lilora(unet_lora_linear_layers)
@@ -851,6 +875,17 @@ def main(args):
         collate_fn=lambda examples: collate_fn(examples),
         num_workers=args.dataloader_num_workers,
     )
+    
+    if args.pre_opt_weight_path != '':
+        pre_opt_hypernet = PreOptHyperDream(args.rank, args.down_dim, args.up_dim)
+        pre_opt_hypernet.set_lilora(unet_lora_linear_layers, train_dataset.num_instance_images)
+        if os.path.isfile(args.pre_opt_weight_path):
+            weight = torch.load(args.pre_opt_weight_path)
+        else:
+            weight = torch.load(os.path.join(args.pre_opt_weight_path, 'pre_optimized.bin'))
+        sd = weight['pre_optimized']
+        pre_opt_hypernet.load_state_dict(sd)
+        pre_opt_hypernet.requires_grad_(False)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -888,7 +923,7 @@ def main(args):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        accelerator.init_trackers("dreambooth-lora", config=vars(args))
+        accelerator.init_trackers("hyperkohaku", config=vars(args))
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -948,13 +983,15 @@ def main(args):
                 pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
                 
                 # run hypernet through ref imgs
-                # hypernet will update all the weight in 
-                hypernetwork(pixel_values)
+                # hypernet will update all the weight in
+                with accelerator.autocast():
+                    pred_weights = hypernetwork(pixel_values)
 
                 if vae is not None:
                     # Convert images to latent space
-                    model_input = vae.encode(pixel_values).latent_dist.sample()
-                    model_input = model_input * vae.config.scaling_factor
+                    with accelerator.autocast():
+                        model_input = vae.encode(pixel_values).latent_dist.sample()
+                        model_input = model_input * vae.config.scaling_factor
                 else:
                     model_input = pixel_values
 
@@ -975,12 +1012,13 @@ def main(args):
                 if args.pre_compute_text_embeddings:
                     encoder_hidden_states = batch["input_ids"]
                 else:
-                    encoder_hidden_states = encode_prompt(
-                        text_encoder,
-                        batch["input_ids"],
-                        batch["attention_mask"],
-                        text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
-                    )
+                    with accelerator.autocast():
+                        encoder_hidden_states = encode_prompt(
+                            text_encoder,
+                            batch["input_ids"],
+                            batch["attention_mask"],
+                            text_encoder_use_attention_mask=args.text_encoder_use_attention_mask,
+                        )
 
                 if accelerator.unwrap_model(unet).config.in_channels == channels * 2:
                     noisy_model_input = torch.cat([noisy_model_input, noisy_model_input], dim=1)
@@ -994,9 +1032,11 @@ def main(args):
                 if args.gradient_checkpointing:
                     noisy_model_input.requires_grad_(True)
                     encoder_hidden_states.requires_grad_(True)
-                model_pred = unet(
-                    noisy_model_input, timesteps, encoder_hidden_states, class_labels=class_labels
-                ).sample
+                
+                with accelerator.autocast():
+                    model_pred = unet(
+                        noisy_model_input, timesteps, encoder_hidden_states, class_labels=class_labels
+                    ).sample
 
                 # if model predicts variance, throw away the prediction. we will only train on the
                 # simplified training objective. This means that all schedulers using the fine tuned
@@ -1012,7 +1052,12 @@ def main(args):
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                img_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                
+                if args.pre_opt_weight_loss:
+                    pre_opt_weights = pre_opt_hypernet(batch['ids']).to(device=accelerator.device)
+                    weight_loss = F.mse_loss(pred_weights.float(), pre_opt_weights.float(), reduction="mean")
+                loss = img_loss + weight_loss*0.1
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:

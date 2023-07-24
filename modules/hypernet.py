@@ -198,21 +198,21 @@ class HyperDream(nn.Module):
     def gen_weight(self, reg_img: torch.Tensor, iters: int = None, weight: torch.Tensor = None):
         weights = self.img_weight_generator(reg_img, iters, weight)
         weight_list = weights.split(1, dim=1) # [b, n, dim] -> n*[b, 1, dim]
-        return [weight.squeeze(1) for weight in weight_list]
+        return weights, [weight.squeeze(1) for weight in weight_list]
     
     def forward(self, ref_img: torch.Tensor):
         if self.training and self.gradient_checkpointing:
-            weight_list = checkpoint.checkpoint(
+            weights, weight_list = checkpoint.checkpoint(
                 self.gen_weight, ref_img
             )
         else:
-            weight_list = self.gen_weight(ref_img)
+            weights, weight_list = self.gen_weight(ref_img)
         
         for key, weight in zip(self.liloras_keys, weight_list):
             self.liloras[key].update_weight(weight, self.add_constant)
         
         # if need further processing
-        return weight_list
+        return weights
 
 
 class PreOptHyperDream(nn.Module):
@@ -264,18 +264,18 @@ class PreOptHyperDream(nn.Module):
     def gen_weight(self, identities: torch.Tensor):
         weights = torch.concat([self.weights[id] for id in identities], dim=0)
         weight_list = weights.to(self.device).split(1, dim=1) # [b, n, dim] -> n*[b, 1, dim]
-        return [weight.squeeze(1) for weight in weight_list]
+        return weights, [weight.squeeze(1) for weight in weight_list]
     
     def forward(self, ref_img: torch.Tensor):
         if self.training and self.gradient_checkpointing:
-            weight_list = checkpoint.checkpoint(
+            weights, weight_list = checkpoint.checkpoint(
                 self.gen_weight, ref_img
             )
         else:
-            weight_list = self.gen_weight(ref_img)
+            weights, weight_list = self.gen_weight(ref_img)
         
         for key, weight in zip(self.liloras_keys, weight_list):
             self.liloras[key].update_weight(weight)
         
         # if need further processing
-        return weight_list
+        return weights

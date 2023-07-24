@@ -858,7 +858,7 @@ def main(args):
 
         for model in models:
             if isinstance(model, type(accelerator.unwrap_model(hypernetwork))):
-                hypernetwork_ = model
+                hypernetwork_: PreOptHyperDream = model
             elif isinstance(model, type(accelerator.unwrap_model(unet))):
                 unet_ = model
             elif isinstance(model, type(accelerator.unwrap_model(text_encoder))):
@@ -869,7 +869,7 @@ def main(args):
             # make sure to pop weight so that corresponding model is not saved again
             weights.pop()
 
-        state_dict = {'pre_optimized': hypernetwork_.weights}
+        state_dict = {'pre_optimized': hypernetwork_.state_dict()}
         torch.save(state_dict, os.path.join(output_dir, "pre_optimized.bin"))
         logger.info(f"Model weights saved in {os.path.join(output_dir, 'pre_optimized.bin')}")
 
@@ -890,6 +890,10 @@ def main(args):
                 raise ValueError(f"unexpected save model: {model.__class__}")
 
         #[TODO] load hypernetwork weights
+        weight = torch.load(os.path.join(input_dir, "pre_optimized.bin"))
+        state_dict = weight['pre_optimized']
+        hypernetwork_.load_state_dict(state_dict)
+        logger.info(f"Model weights loaded from {os.path.join(input_dir, 'pre_optimized.bin')}")
 
     accelerator.register_save_state_pre_hook(save_model_hook)
     accelerator.register_load_state_pre_hook(load_model_hook)
