@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from diffusers.models.attention import Attention
+from diffusers.loaders import AttnProcessor
 
 try:
     import xformers.ops
@@ -26,7 +27,7 @@ class LiLoRALinearLayer(nn.Module):
         if rank > min(in_features, out_features):
             raise ValueError(f"LoRA rank {rank} must be less or equal than {min(in_features, out_features)}")
 
-        self.seed = self.register_buffer('aux_seed', torch.randint(0, 2**32-1, (1,)))
+        self.register_buffer('aux_seed', torch.randint(0, 2**32-1, (1,)))
         self.in_features = in_features
         self.out_features = out_features
         self.down_dim = down_dim
@@ -44,8 +45,16 @@ class LiLoRALinearLayer(nn.Module):
         assert self.down is not None and self.up is not None
         assert (self.down.dim() == 2 or self.down.size(0) == 1
                 and self.up.dim() == 2 or self.up.size(0) == 1)
-        self.down = nn.Parameter(self.down.reshape(-1, self.in_features))
-        self.up = nn.Parameter(self.up.reshape(self.out_features, -1))
+        seed = self.aux_seed.item()
+        del self.aux_seed
+        self.aux_seed = seed
+        with torch.no_grad():
+            down = self.down.reshape(-1, self.in_features)
+            self.down = nn.Linear(self.in_features, self.rank, bias=False)
+            self.down.weight = nn.Parameter(down)
+            up = self.up.reshape(self.out_features, -1)
+            self.up = nn.Linear(self.rank, self.out_features, bias=False)
+            self.up.weight = nn.Parameter(up)
 
     def update_weight(self, weight: torch.Tensor, add_constant=False):
         '''

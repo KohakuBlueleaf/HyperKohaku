@@ -1,7 +1,7 @@
 # run train
 python -m accelerate.commands.launch $launch_args `
   --num_processes=1 --num_cpu_threads_per_process=8 "./train_preoptimized_liloras.py" `
-  --pretrained_model_name_or_path "./models/kohaku-v2.1" `
+  --pretrained_model_name_or_path "runwayml/stable-diffusion-v1-5" `
   --instance_data_dir "F:\nn\datasets\celeba-hq-512-4.8k" `
   --instance_prompt "A [V] face" `
   --output_dir "./outputs" `

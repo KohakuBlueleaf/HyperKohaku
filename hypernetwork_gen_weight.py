@@ -180,7 +180,8 @@ def main(args):
     ref_img = img_transpose(ref_img).unsqueeze(0).to("cuda")
     
     with torch.no_grad():
-        hypernetwork(ref_img)
+        weight = hypernetwork(ref_img)
+    print(torch.norm(weight))
     
     for lilora in unet_lora_linear_layers:
         lilora.make_weight()

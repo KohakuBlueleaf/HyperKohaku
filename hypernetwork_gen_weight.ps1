@@ -1,9 +1,9 @@
 # run train
 python "./hypernetwork_gen_weight.py" `
-  --pretrained_model_name_or_path "./models/kohaku-v2.1" `
+  --pretrained_model_name_or_path "runwayml/stable-diffusion-v1-5" `
   --hyperkohaku_model_path "./outputs" `
   --output_dir "./outputs" `
-  --decode_iter 8 `
+  --decode_iter 50 `
   --rank 1 `
   --down_dim 96 `
   --up_dim 48 `
