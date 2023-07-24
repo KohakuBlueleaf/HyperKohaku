@@ -792,7 +792,55 @@ def main(args):
         # ensure that dtype is float32, even if rest of the model that isn't trained is loaded in fp16
         # text_lora_parameters = LoraLoaderMixin._modify_text_encoder(text_encoder, dtype=torch.float32, rank=args.rank)
 
-    # [TODO] model hook for hypernetwork if needed
+    # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
+    def save_model_hook(models, weights, output_dir):
+        # there are only two options here. Either are just the unet attn processor layers
+        # or there are the unet and text encoder atten layers
+        unet_lora_layers_to_save = None
+        text_encoder_lora_layers_to_save = None
+
+        for model in models:
+            if isinstance(model, type(accelerator.unwrap_model(hypernetwork))):
+                hypernetwork_: HyperDream = model
+            elif isinstance(model, type(accelerator.unwrap_model(unet))):
+                unet_ = model
+            elif isinstance(model, type(accelerator.unwrap_model(text_encoder))):
+                text_encoder_ = model
+            else:
+                raise ValueError(f"unexpected save model: {model.__class__}")
+
+            # make sure to pop weight so that corresponding model is not saved again
+            weights.pop()
+
+        state_dict = {'hypernetwork': hypernetwork_.state_dict()}
+        torch.save(state_dict, os.path.join(output_dir, "hypernetwork.bin"))
+        logger.info(f"Model weights saved in {os.path.join(output_dir, 'hypernetwork.bin')}")
+
+    def load_model_hook(models, input_dir):
+        unet_ = None
+        text_encoder_ = None
+
+        while len(models) > 0:
+            model = models.pop()
+
+            if isinstance(model, type(accelerator.unwrap_model(hypernetwork))):
+                hypernetwork_ = model
+            elif isinstance(model, type(accelerator.unwrap_model(unet))):
+                unet_ = model
+            elif isinstance(model, type(accelerator.unwrap_model(text_encoder))):
+                text_encoder_ = model
+            else:
+                raise ValueError(f"unexpected save model: {model.__class__}")
+
+        #[TODO] load hypernetwork weights
+        weight = torch.load(os.path.join(input_dir, "hypernetwork.bin"))
+        state_dict = weight['hypernetwork']
+        hypernetwork_.load_state_dict(state_dict)
+        logger.info(f"Model weights loaded from {os.path.join(input_dir, 'hypernetwork.bin')}")
+
+    accelerator.register_save_state_pre_hook(save_model_hook)
+    accelerator.register_load_state_pre_hook(load_model_hook)
+    
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     if args.allow_tf32:
@@ -1112,6 +1160,9 @@ def main(args):
     # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
+        state_dict = {'hypernetwork': hypernetwork.state_dict()}
+        torch.save(state_dict, os.path.join(args.output_dir, "hypernetwork.bin"))
+        logger.info(f"Model weights saved in {os.path.join(args.output_dir, 'hypernetwork.bin')}")
         # [TODO] Save HyperNetwork
 
         # Final inference

@@ -1134,6 +1134,9 @@ def main(args):
     # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
+        state_dict = {'pre_optimized': hypernetwork.state_dict()}
+        torch.save(state_dict, os.path.join(args.output_dir, "pre_optimized.bin"))
+        logger.info(f"Model weights saved in {os.path.join(args.output_dir, 'pre_optimized.bin')}")
         # [TODO] Save HyperNetwork
 
         # Final inference
