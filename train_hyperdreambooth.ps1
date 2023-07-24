@@ -8,17 +8,18 @@ python -m accelerate.commands.launch $launch_args `
   --resolution 512 `
   --learning_rate 0.00002 `
   --lr_scheduler cosine `
-  --lr_warmup_steps 100 `
+  --lr_warmup_steps 10 `
   --allow_tf32 `
   --enable_xformers_memory_efficient_attention `
   --pre_compute_text_embeddings `
   --checkpoints_total_limit 2 `
   --checkpointing_steps 500 `
-  --rank 4 `
-  --down_dim 100 `
-  --up_dim 50 `
+  --rank 1 `
+  --down_dim 96 `
+  --up_dim 48 `
   --train_batch_size 4 `
   --mixed_precision "bf16" `
-  --pre_opt_weight_path "./models/pre-optimized"
+  --pre_opt_weight_path "./outputs" `
+  --gradient_checkpointing
 
 Write-Output "Train finished"

@@ -40,6 +40,13 @@ class LiLoRALinearLayer(nn.Module):
         if trained:
             self.weight = nn.Parameter(torch.empty(down_dim+up_dim, dtype=torch.float32))
 
+    def make_weight(self):
+        assert self.down is not None and self.up is not None
+        assert (self.down.dim() == 2 or self.down.size(0) == 1
+                and self.up.dim() == 2 or self.up.size(0) == 1)
+        self.down = nn.Parameter(self.down.reshape(-1, self.in_features))
+        self.up = nn.Parameter(self.up.reshape(self.out_features, -1))
+
     def update_weight(self, weight: torch.Tensor, add_constant=False):
         '''
         weight: [b, up_dim+down_dim] or [up_dim+down_dim]

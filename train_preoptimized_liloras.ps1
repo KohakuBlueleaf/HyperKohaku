@@ -12,7 +12,7 @@ python -m accelerate.commands.launch $launch_args `
   --enable_xformers_memory_efficient_attention `
   --pre_compute_text_embeddings `
   --checkpoints_total_limit 2 `
-  --checkpointing_steps 500 `
+  --checkpointing_steps 100 `
   --train_steps_per_identity 10 `
   --rank 1 `
   --down_dim 96 `

@@ -61,6 +61,7 @@ from diffusers import (
 from diffusers.loaders import (
     LoraLoaderMixin,
     text_encoder_lora_state_dict,
+    
 )
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
@@ -597,22 +598,6 @@ def encode_prompt(text_encoder, input_ids, attention_mask, text_encoder_use_atte
     prompt_embeds = prompt_embeds[0]
 
     return prompt_embeds
-
-
-def unet_attn_processors_state_dict(unet) -> Dict[str, torch.tensor]:
-    r"""
-    Returns:
-        a state dict containing just the attention processor parameters.
-    """
-    attn_processors = unet.attn_processors
-
-    attn_processors_state_dict = {}
-
-    for attn_processor_key, attn_processor in attn_processors.items():
-        for parameter_key, parameter in attn_processor.state_dict().items():
-            attn_processors_state_dict[f"{attn_processor_key}.{parameter_key}"] = parameter
-
-    return attn_processors_state_dict
 
 
 def main(args):
