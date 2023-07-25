@@ -214,8 +214,8 @@ class HyperDream(nn.Module):
         length = len(self.liloras_keys)
         print(f"LiLoRA keys: {length}, Pre-Optimized params per images: {length*self.weight_dim}")
     
-    def gen_weight(self, reg_img, iters, weight, ensure_grad = 0):
-        weights = self.img_weight_generator(reg_img, iters, weight, ensure_grad)
+    def gen_weight(self, ref_img, iters, weight, ensure_grad = 0):
+        weights = self.img_weight_generator(ref_img, iters, weight, ensure_grad)
         weight_list = weights.split(1, dim=1) # [b, n, dim] -> n*[b, 1, dim]
         return weights, [weight.squeeze(1) for weight in weight_list]
     

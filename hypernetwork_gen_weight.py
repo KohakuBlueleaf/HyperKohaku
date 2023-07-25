@@ -160,6 +160,7 @@ def main(args):
         weight_dim=(args.down_dim + args.up_dim)*args.rank,
         weight_num=len(unet_lora_linear_layers),
         sample_iters=args.decode_iter,
+        decoder_blocks=8
     )
     hypernetwork.set_lilora(unet_lora_linear_layers)
     

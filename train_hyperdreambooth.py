@@ -406,6 +406,12 @@ def parse_args(input_args=None):
         help="The optional `class_label` conditioning to pass to the unet, available values are `timesteps`.",
     )
     parser.add_argument(
+        "--decoder_blocks",
+        type=int,
+        default=4,
+        help=("The dimension of the LoRA update matrices."),
+    )
+    parser.add_argument(
         "--rank",
         type=int,
         default=1,
@@ -764,7 +770,8 @@ def main(args):
     hypernetwork = HyperDream(
         weight_num = len(unet_lora_linear_layers),
         weight_dim = (args.up_dim + args.down_dim) * args.rank,
-        sample_iters = 4 
+        sample_iters = 4,
+        decoder_blocks=args.decoder_blocks,
     )
     hypernetwork.to(accelerator.device)
     hypernetwork.set_lilora(unet_lora_linear_layers)
