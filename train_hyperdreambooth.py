@@ -808,7 +808,11 @@ def main(args):
             # make sure to pop weight so that corresponding model is not saved again
             weights.pop()
 
-        state_dict = {'hypernetwork': hypernetwork_.state_dict()}
+        aux_seed = torch.stack([lora.aux_seed for lora in unet_lora_linear_layers])
+        state_dict = {
+            'hypernetwork': hypernetwork_.state_dict(),
+            'aux_seed': aux_seed
+        }
         torch.save(state_dict, os.path.join(output_dir, "hypernetwork.bin"))
         logger.info(f"Model weights saved in {os.path.join(output_dir, 'hypernetwork.bin')}")
 
@@ -833,6 +837,12 @@ def main(args):
         state_dict = weight['hypernetwork']
         hypernetwork_.load_state_dict(state_dict)
         logger.info(f"Model weights loaded from {os.path.join(input_dir, 'hypernetwork.bin')}")
+        aux_seed = weight.get('aux_seed', None)
+        if aux_seed is not None:
+            if aux_seed.size(0) != len(unet_lora_linear_layers):
+                logger.warn(f"aux_seed size mismatch, expected {len(unet_lora_linear_layers)}, got {aux_seed.size(0)}")
+            for lora, aux_seed in zip(unet_lora_linear_layers, aux_seed):
+                lora.aux_seed = aux_seed
 
     accelerator.register_save_state_pre_hook(save_model_hook)
     accelerator.register_load_state_pre_hook(load_model_hook)
@@ -931,6 +941,12 @@ def main(args):
         pre_opt_hypernet.load_state_dict(sd)
         pre_opt_hypernet.requires_grad_(False)
         pre_opt_hypernet.set_device(accelerator.device)
+        
+        aux_seed = weight['aux_seed']
+        if aux_seed.size(0) != len(unet_lora_linear_layers):
+            logger.warn(f"aux_seed size {aux_seed.size(0)} != len(unet_lora_linear_layers) {len(unet_lora_linear_layers)}")
+        for lora, aux_seed in zip(unet_lora_linear_layers, aux_seed):
+            lora.aux_seed = aux_seed
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False

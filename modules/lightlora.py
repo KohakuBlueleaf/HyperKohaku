@@ -6,10 +6,12 @@ import torch.optim as optim
 from diffusers.models.attention import Attention
 from diffusers.loaders import AttnProcessor
 
+
 try:
     import xformers.ops
 except:
     pass
+
 
 class LiLoRALinearLayer(nn.Module):
     def __init__(

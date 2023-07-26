@@ -869,7 +869,11 @@ def main(args):
             # make sure to pop weight so that corresponding model is not saved again
             weights.pop()
 
-        state_dict = {'pre_optimized': hypernetwork_.state_dict()}
+        aux_seed = torch.stack([lora.aux_seed for lora in unet_lora_linear_layers])
+        state_dict = {
+            'pre_optimized': hypernetwork_.state_dict(),
+            'aux_seed': aux_seed
+        }
         torch.save(state_dict, os.path.join(output_dir, "pre_optimized.bin"))
         logger.info(f"Model weights saved in {os.path.join(output_dir, 'pre_optimized.bin')}")
 
@@ -894,6 +898,12 @@ def main(args):
         state_dict = weight['pre_optimized']
         hypernetwork_.load_state_dict(state_dict)
         logger.info(f"Model weights loaded from {os.path.join(input_dir, 'pre_optimized.bin')}")
+        aux_seed = weight.get('aux_seed', None)
+        if aux_seed is not None:
+            if aux_seed.size(0) != len(unet_lora_linear_layers):
+                logger.warn(f"aux_seed size mismatch, expected {len(unet_lora_linear_layers)}, got {aux_seed.size(0)}")
+            for lora, aux_seed in zip(unet_lora_linear_layers, aux_seed):
+                lora.aux_seed = aux_seed
 
     accelerator.register_save_state_pre_hook(save_model_hook)
     accelerator.register_load_state_pre_hook(load_model_hook)
