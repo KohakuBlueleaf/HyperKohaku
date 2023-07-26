@@ -947,6 +947,7 @@ def main(args):
             logger.warn(f"aux_seed size {aux_seed.size(0)} != len(unet_lora_linear_layers) {len(unet_lora_linear_layers)}")
         for lora, aux_seed in zip(unet_lora_linear_layers, aux_seed):
             lora.aux_seed = aux_seed
+        logger.info(f"Pre-optimized weights loaded from {args.pre_opt_weight_path}. total aux seed: {aux_seed.size(0)}")
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
