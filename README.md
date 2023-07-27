@@ -3,6 +3,15 @@ A diffusers based implementation of [HyperDreamBooth](https://hyperdreambooth.gi
 
 the code is based on the HyperDreamBooth implementation in the [LyCORIS project](https://github.com/KohakuBlueleaf/LyCORIS).
 
+## TODOs
+If you have any idea on these todos, just open issues or PRs. Thx!
+
+* Implement in-run validation
+* Implement section 4
+* Implement better dreambooth training (like mask the face during training)
+* Implement a more general hypernetwork (Already in LyCORIS)
+
+
 ## HyperDreamBooth
 This section is a brief introduction of HyperDreamBooth, I will split hyperdreambooth into 4 sections. And this projection will have 4 corresponding scripts
 
