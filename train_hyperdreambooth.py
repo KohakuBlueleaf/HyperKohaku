@@ -1120,7 +1120,7 @@ def main(args):
                     with torch.no_grad(), accelerator.autocast():
                         pre_opt_weights, _ = pre_opt_hypernet.gen_weight(batch['ids'])
                     weight_loss = F.mse_loss(pred_weights.float(), pre_opt_weights.float(), reduction="mean")
-                loss = weight_loss*0.1 + img_loss
+                loss = weight_loss*args.pre_opt_weight_loss + img_loss
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
