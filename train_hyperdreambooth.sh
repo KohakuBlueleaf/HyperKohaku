@@ -23,5 +23,3 @@ python -m accelerate.commands.launch \
   --pre_opt_weight_path "./output" \
   --num_train_epochs 50 \
   --report_to "wandb" \
-
-Write-Output "Train finished"
