@@ -189,9 +189,9 @@ def parse_args(input_args=None):
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
-        "--validation_epochs",
+        "--validation_steps",
         type=int,
-        default=50,
+        default=1,
         help=(
             "Run dreambooth validation every X epochs. Dreambooth validation consists of running the prompt"
             " `args.validation_prompt` multiple times: `args.num_validation_images`."
@@ -791,6 +791,7 @@ def main(args):
             return prompt_embeds
 
         pre_computed_encoder_hidden_states = compute_text_embeddings(args.instance_prompt)
+        pre_computed_empty_hidden_states = compute_text_embeddings("")
 
         if args.instance_prompt is not None:
             pre_computed_instance_prompt_encoder_hidden_states = compute_text_embeddings(args.instance_prompt)
@@ -1137,14 +1138,17 @@ def main(args):
         if global_step >= args.max_train_steps:
             break
 
-    if accelerator.is_main_process:
-        # [TODO] validation process, take validation images and use instance prompt
-        pass
-
+        if accelerator.is_main_process and global_step % args.validation_steps == 0:
+            # [TODO] validation process, take validation images and use instance prompt
+            pass
+    
     # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        state_dict = {'pre_optimized': hypernetwork.state_dict()}
+        state_dict = {
+            'pre_optimized': hypernetwork.state_dict(),
+            'aux_seed': torch.stack([lora.aux_seed for lora in unet_lora_linear_layers])
+        }
         torch.save(state_dict, os.path.join(args.output_dir, "pre_optimized.bin"))
         logger.info(f"Model weights saved in {os.path.join(args.output_dir, 'pre_optimized.bin')}")
         # [TODO] Save HyperNetwork
