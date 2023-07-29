@@ -1181,7 +1181,10 @@ def main(args):
     # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        state_dict = {'hypernetwork': hypernetwork.state_dict()}
+        state_dict = {
+            'hypernetwork': hypernetwork.state_dict(),
+            'aux_seed': torch.stack([lora.aux_seed for lora in unet_lora_linear_layers]),
+        }
         torch.save(state_dict, os.path.join(args.output_dir, "hypernetwork.bin"))
         logger.info(f"Model weights saved in {os.path.join(args.output_dir, 'hypernetwork.bin')}")
         # [TODO] Save HyperNetwork
