@@ -67,8 +67,8 @@ class LiLoRALinearLayer(nn.Module):
         up_aux = torch.empty(self.out_features, self.up_dim, dtype=weight.dtype, device=weight.device)
         rng_state = torch.random.get_rng_state()
         torch.manual_seed(self.aux_seed.item())
-        nn.init.orthogonal_(down_aux, gain=1)
-        nn.init.orthogonal_(up_aux, gain=1)
+        nn.init.xavier_normal_(down_aux, gain=1)
+        nn.init.xavier_normal_(up_aux, gain=1)
         torch.random.set_rng_state(rng_state)
         
         down, up = weight.split(self.split, dim=-1)
